@@ -9,6 +9,7 @@ import 'package:get/get.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../services/agent_service.dart';
+import 'image_viewer.dart';
 
 /// One tool step the agent took, parsed from a saved trace line.
 class AgentStep {
@@ -365,7 +366,7 @@ Widget agentImage(Uri uri, String? alt, {String? project}) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: GestureDetector(
-          onTap: () => Share.shareXFiles([XFile(f.path)]),
+          onTap: () => ImageViewer.showFile(c, f),
           child: ClipRRect(
               borderRadius: BorderRadius.circular(12),
               child: Image.file(f, fit: BoxFit.contain, height: 320)),
@@ -375,21 +376,24 @@ Widget agentImage(Uri uri, String? alt, {String? project}) {
   );
 }
 
-/// Tapping a produced file: play audio, otherwise share / save it.
+/// Opens a preview for a produced file.
 Future<void> openAgentFile(BuildContext context, String name) async {
   final f = await agentFile(Uri.decodeComponent(name));
   if (f == null) {
     Get.snackbar('File not found', name);
     return;
   }
+  if (!context.mounted) return;
   final ext = f.path.split('.').last.toLowerCase();
+  if (_imageExts.contains(ext)) {
+    await ImageViewer.showFile(context, f);
+    return;
+  }
   if (['wav', 'mp3', 'm4a', 'ogg', 'aac', 'flac'].contains(ext)) {
-    if (!context.mounted) return;
     await showModalBottomSheet(
         context: context, builder: (_) => _AudioSheet(file: f));
     return;
   }
-  if (!context.mounted) return;
   await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -482,7 +486,6 @@ class _FileSheetState extends State<_FileSheet> {
   @override
   Widget build(BuildContext context) {
     final size = widget.file.lengthSync();
-    final isImage = _imageExts.contains(_ext);
     return SafeArea(
       child: ConstrainedBox(
         constraints: BoxConstraints(
@@ -502,33 +505,30 @@ class _FileSheetState extends State<_FileSheet> {
                         color: Theme.of(context).hintColor, fontSize: 12)),
                 const SizedBox(height: 10),
                 Flexible(
-                  child: isImage
-                      ? InteractiveViewer(
-                          child: Image.file(widget.file, fit: BoxFit.contain))
-                      : _text != null
-                          ? Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(12),
-                              decoration: BoxDecoration(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .surfaceContainerHighest
-                                      .withValues(alpha: 0.5),
-                                  borderRadius: BorderRadius.circular(12)),
-                              child: SingleChildScrollView(
-                                  child: SelectableText(
-                                      _truncated
-                                          ? '$_text\n… (preview cut; save the file for everything)'
-                                          : _text!,
-                                      style: const TextStyle(
-                                          fontFamily: 'monospace',
-                                          fontSize: 12.5,
-                                          height: 1.45))))
-                          : Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 24),
-                              child: Text(_textExts.contains(_ext)
-                                  ? 'Loading…'
-                                  : 'No preview for .$_ext files. Save or share it instead.')),
+                  child: _text != null
+                      ? Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest
+                                  .withValues(alpha: 0.5),
+                              borderRadius: BorderRadius.circular(12)),
+                          child: SingleChildScrollView(
+                              child: SelectableText(
+                                  _truncated
+                                      ? '$_text\n… (preview cut; save the file for everything)'
+                                      : _text!,
+                                  style: const TextStyle(
+                                      fontFamily: 'monospace',
+                                      fontSize: 12.5,
+                                      height: 1.45))))
+                      : Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 24),
+                          child: Text(_textExts.contains(_ext)
+                              ? 'Loading…'
+                              : 'No preview for .$_ext files. Save or share it instead.')),
                 ),
                 const SizedBox(height: 12),
                 Wrap(spacing: 8, runSpacing: 8, children: [

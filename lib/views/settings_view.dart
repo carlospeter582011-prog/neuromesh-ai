@@ -47,7 +47,7 @@ class _SettingsViewState extends State<SettingsView> {
         'thinking reasoning temperature context size max tokens seed stop sequences top p top k',
     'GGUF & LiteRT':
         'performance cpu gpu vulkan threads hardware acceleration ram',
-    'Image generation': 'image size resolution diffusion steps backend',
+    'Image generation': 'pollinations online image photo editing key',
     'Memory': 'preferences facts remember automatic learning personal',
     'Workload placement':
         'voice tts stt speech audio transcribe image device cluster',
@@ -173,6 +173,7 @@ class _SettingsViewState extends State<SettingsView> {
               icon: Icons.image_outlined,
               title: 'Image generation',
               value: 'Pollinations · Online',
+              reactive: false,
               builder: (ctx) => const PollinationsPanel(),
             ),
           ]),

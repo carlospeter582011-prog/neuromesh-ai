@@ -126,3 +126,8 @@ Normal writing requests that explicitly ask for narration use the same two-stage
 
 - Sherpa-ONNX 2.x expects phoneme codepoints for English Kitten and Kokoro models. NeuroMesh initializes the bundled Piper phonemizer and supplies these codepoints to the model. Selected speakers keep their IDs. Kokoro multilingual input containing Chinese uses the available model lexicon.
 - Host regression tests called the actual `text_to_speech` tool with the published Kitten Nano and Kokoro English archives. Both created WAVs with audible sample levels and plausible playback duration. To rerun, put the extracted voice folders under `NEUROMESH_TEST_VOICE_MODELS` and make the sherpa and Piper Linux native libraries available via `LD_LIBRARY_PATH`. Run `flutter test test/voice_model_synthesis_test.dart`. Android voice calls still need a device check. [Tracking issue](https://github.com/carlospeter582011-prog/neuromesh-ai/issues/49)
+
+## Opening images
+
+- Generated image thumbnails, workspace image links, and call images open in the full-screen image viewer. The viewer supports zoom, download, and a separate Share button. File-backed images keep their original file type when saved or shared.
+- Settings → Image generation shows the Pollinations panel. The page uses the panel's own state instead of an outer GetX observer that expected an observable value. Widget tests cover opening this page and tapping a generated image. [Tracking issue](https://github.com/carlospeter582011-prog/neuromesh-ai/issues/51)

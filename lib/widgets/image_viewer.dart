@@ -9,17 +9,24 @@ import 'package:share_plus/share_plus.dart';
 import '../core/ui.dart';
 
 class ImageViewer extends StatefulWidget {
-  final String base64Image;
+  final String? base64Image;
+  final File? file;
 
-  const ImageViewer({super.key, required this.base64Image});
+  const ImageViewer._({this.base64Image, this.file});
 
-  static Future<void> show(BuildContext context, String base64Image) {
+  static Future<void> show(BuildContext context, String base64Image) =>
+      _show(context, ImageViewer._(base64Image: base64Image));
+
+  static Future<void> showFile(BuildContext context, File file) =>
+      _show(context, ImageViewer._(file: file));
+
+  static Future<void> _show(BuildContext context, ImageViewer viewer) {
     return showDialog(
       context: context,
       useSafeArea: false,
       barrierDismissible: true,
       barrierColor: Colors.black,
-      builder: (_) => ImageViewer(base64Image: base64Image),
+      builder: (_) => viewer,
     );
   }
 
@@ -28,14 +35,19 @@ class ImageViewer extends StatefulWidget {
 }
 
 class _ImageViewerState extends State<ImageViewer> {
-  late final Uint8List _bytes;
+  late final Uint8List? _bytes;
   bool _isSaving = false;
   bool _isSharing = false;
 
   @override
   void initState() {
     super.initState();
-    _bytes = base64Decode(widget.base64Image);
+    try {
+      _bytes =
+          widget.base64Image == null ? null : base64Decode(widget.base64Image!);
+    } on FormatException {
+      _bytes = null;
+    }
   }
 
   Future<void> _download() async {
@@ -46,7 +58,11 @@ class _ImageViewerState extends State<ImageViewer> {
       if (!hasAccess) {
         await Gal.requestAccess();
       }
-      await Gal.putImageBytes(_bytes);
+      if (widget.file case final file?) {
+        await Gal.putImage(file.path);
+      } else {
+        await Gal.putImageBytes(_bytes!);
+      }
       if (mounted) {
         showToast('Saved', 'Image saved to gallery',
             tone: ToastTone.success, duration: const Duration(seconds: 2));
@@ -68,14 +84,13 @@ class _ImageViewerState extends State<ImageViewer> {
   Future<void> _share() async {
     setState(() => _isSharing = true);
     try {
-      final tempDir = await getTemporaryDirectory();
-      final fileName = 'neuromesh_${DateTime.now().millisecondsSinceEpoch}.png';
-      final file = File('${tempDir.path}/$fileName');
-      await file.writeAsBytes(_bytes);
-      await Share.shareXFiles(
-        [XFile(file.path)],
-        text: 'Generated with NeuroMesh AI',
-      );
+      var file = widget.file;
+      if (file == null) {
+        final tempDir = await getTemporaryDirectory();
+        final name = 'neuromesh_${DateTime.now().millisecondsSinceEpoch}.png';
+        file = await File('${tempDir.path}/$name').writeAsBytes(_bytes!);
+      }
+      await Share.shareXFiles([XFile(file.path)]);
     } catch (e) {
       if (mounted) {
         showToast('Not shared', 'Error sharing image: $e',
@@ -88,6 +103,16 @@ class _ImageViewerState extends State<ImageViewer> {
 
   @override
   Widget build(BuildContext context) {
+    final ImageProvider<Object>? image;
+    if (widget.file case final file?) {
+      image = FileImage(file);
+    } else if (_bytes case final bytes?) {
+      image = MemoryImage(bytes);
+    } else {
+      image = null;
+    }
+    const unavailable = Text('Couldn’t open this image.',
+        style: TextStyle(color: Colors.white70));
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -98,14 +123,13 @@ class _ImageViewerState extends State<ImageViewer> {
             minScale: 0.5,
             maxScale: 5.0,
             child: Center(
-              child: Image.memory(
-                _bytes,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Center(
-                  child: Icon(Icons.broken_image_outlined,
-                      color: Colors.white.withValues(alpha: 0.5), size: 48),
-                ),
-              ),
+              child: image == null
+                  ? unavailable
+                  : Image(
+                      image: image,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) => unavailable,
+                    ),
             ),
           ),
 
@@ -123,19 +147,21 @@ class _ImageViewerState extends State<ImageViewer> {
                       onTap: () => Navigator.of(context).pop(),
                     ),
                     const Spacer(),
-                    _ChromeButton(
-                      icon: Icons.file_download_outlined,
-                      tooltip: 'Download',
-                      isLoading: _isSaving,
-                      onTap: _download,
-                    ),
-                    const SizedBox(width: 10),
-                    _ChromeButton(
-                      icon: Icons.ios_share_rounded,
-                      tooltip: 'Share',
-                      isLoading: _isSharing,
-                      onTap: _share,
-                    ),
+                    if (image != null) ...[
+                      _ChromeButton(
+                        icon: Icons.file_download_outlined,
+                        tooltip: 'Download',
+                        isLoading: _isSaving,
+                        onTap: _download,
+                      ),
+                      const SizedBox(width: 10),
+                      _ChromeButton(
+                        icon: Icons.ios_share_rounded,
+                        tooltip: 'Share',
+                        isLoading: _isSharing,
+                        onTap: _share,
+                      ),
+                    ],
                   ],
                 ),
               ),

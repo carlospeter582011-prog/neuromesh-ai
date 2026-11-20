@@ -28,6 +28,7 @@ import '../services/model_transfer_service.dart';
 import 'model_transfer_view.dart';
 import '../widgets/agent_steps.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/image_viewer.dart';
 import '../widgets/tool_confirm.dart';
 import '../services/inference_service.dart';
 import '../services/voice_clone_store.dart';
@@ -1493,11 +1494,7 @@ class _VoiceCallViewState extends State<VoiceCallView> {
                     Wrap(spacing: 8, runSpacing: 8, children: [
                       for (final f in _shots)
                         GestureDetector(
-                          onTap: () => showDialog(
-                              context: context,
-                              builder: (_) => Dialog(
-                                  child:
-                                      InteractiveViewer(child: Image.file(f)))),
+                          onTap: () => ImageViewer.showFile(context, f),
                           child: ClipRRect(
                               borderRadius: BorderRadius.circular(12),
                               child: Image.file(f,

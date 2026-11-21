@@ -47,6 +47,14 @@ android {
             // llama.cpp armv9 (SVE2/SME) CPU variants abort on some phones
             // (Pixel 8); the loader never picks them, so don't ship them.
             excludes += setOf("**/libggml-cpu-android_armv9*.so")
+            if (System.getenv("NEUROMESH_PLAY_BUNDLE") == "true") {
+                excludes += setOf(
+                    "**/libproot.so",
+                    "**/libproot_loader.so",
+                    "**/libtalloc.so",
+                    "**/libandroid-shmem.so",
+                )
+            }
         }
     }
 

@@ -13,6 +13,7 @@ See [the development handoff](continue.md) for release status, verification resu
 - Device clustering over the local network (worker discovery, QR / manual pairing)
 - Local OpenAI-compatible API server
 - OpenCode desktop preview with a local model in the Linux system terminal ([setup and supported features](docs/OPENCODE.md))
+- Android 2.0 work in progress adds a standalone ARM64 OpenCode preview with Chat and Terminal. [Setup and verification status](docs/OPENCODE.md#android-20-standalone-preview)
 - Document text extraction, public web search, and clickable links in assistant replies and voice transcripts
 - Online image generation and editing through Pollinations
 - Hugging Face search and download for GGUF models and helpers, with a queue and Wi-Fi-only option

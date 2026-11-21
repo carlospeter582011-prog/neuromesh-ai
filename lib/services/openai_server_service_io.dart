@@ -11,20 +11,31 @@ import '../controllers/settings_controller.dart';
 import '../core/constants.dart';
 import 'agent_service.dart';
 import 'inference_service.dart';
+import 'opencode_tools.dart';
 import 'voice_service.dart';
 
 class OpenAiServerService {
-  OpenAiServerService() : _agentModel = null;
+  OpenAiServerService()
+      : _agentModel = null,
+        _allowTools = false,
+        _workspace = null;
 
-  /// A restricted, authenticated listener for a single desktop agent session.
-  OpenAiServerService.forAgentModel(String modelName) : _agentModel = modelName;
+  /// A restricted, authenticated listener for a single local agent session.
+  OpenAiServerService.forAgentModel(String modelName,
+      {bool allowTools = false, Directory? workspace})
+      : _agentModel = modelName,
+        _allowTools = allowTools,
+        _workspace = workspace;
 
   static const agentModelId = 'loaded';
   final String? _agentModel;
+  final bool _allowTools;
+  final Directory? _workspace;
   int? _agentModelRevision;
   late final String _generationSource =
       _agentModel == null ? 'server' : 'agentBridge-${_id()}';
   _SseStream? _agentStream;
+  void Function(String)? onAgentText;
 
   HttpServer? _server;
   bool _busy = false;
@@ -56,7 +67,8 @@ class OpenAiServerService {
     if (_server != null) return;
     if (_agentModel != null) {
       if (allowNetwork || (apiKey?.trim().isEmpty ?? true)) {
-        throw ArgumentError('The agent bridge requires a key and loopback access.');
+        throw ArgumentError(
+            'The agent bridge requires a key and loopback access.');
       }
       final inference = Get.find<InferenceService>();
       if (!inference.isModelLoaded.value ||
@@ -229,13 +241,16 @@ class OpenAiServerService {
   Future<void> _handleFilesGet(HttpRequest request, String path) async {
     final agent = Get.find<AgentService>();
     if (path == '/v1/files') {
-      await _json(request, {'object': 'list', 'data': await agent.listWorkspace()});
+      await _json(
+          request, {'object': 'list', 'data': await agent.listWorkspace()});
       return;
     }
-    final name = Uri.decodeComponent(path.substring('/v1/files/'.length)).replaceAll('/content', '');
+    final name = Uri.decodeComponent(path.substring('/v1/files/'.length))
+        .replaceAll('/content', '');
     final f = await agent.workspaceFile(name);
     if (f == null) {
-      await _json(request, {'error': 'File not found'}, status: HttpStatus.notFound);
+      await _json(request, {'error': 'File not found'},
+          status: HttpStatus.notFound);
       return;
     }
     final ext = name.split('.').last.toLowerCase();
@@ -253,8 +268,10 @@ class OpenAiServerService {
       'pdf': 'application/pdf',
     };
     _addCorsHeaders(request.response);
-    request.response.headers.set(HttpHeaders.contentTypeHeader, types[ext] ?? 'application/octet-stream');
-    request.response.headers.set('Content-Disposition', 'attachment; filename="${f.path.split('/').last}"');
+    request.response.headers.set(HttpHeaders.contentTypeHeader,
+        types[ext] ?? 'application/octet-stream');
+    request.response.headers.set('Content-Disposition',
+        'attachment; filename="${f.path.split('/').last}"');
     await request.response.addStream(f.openRead());
     await request.response.close();
   }
@@ -264,12 +281,14 @@ class OpenAiServerService {
     final name = '${body['name'] ?? ''}';
     final b64 = '${body['content_base64'] ?? ''}';
     if (name.isEmpty || b64.isEmpty) {
-      await _json(request, {'error': 'name and content_base64 are required'}, status: HttpStatus.badRequest);
+      await _json(request, {'error': 'name and content_base64 are required'},
+          status: HttpStatus.badRequest);
       return;
     }
     final f = await Get.find<AgentService>().newWorkspaceFile(name);
     await f.writeAsBytes(base64Decode(b64));
-    await _json(request, {'name': f.path.split('/').last, 'bytes': await f.length()});
+    await _json(
+        request, {'name': f.path.split('/').last, 'bytes': await f.length()});
   }
 
   /// JSON body: {"audio_base64": "...", "file_name": "voice.mp3", "language": "en"}
@@ -277,19 +296,22 @@ class OpenAiServerService {
     final body = await _readJson(request);
     final b64 = '${body['audio_base64'] ?? body['file'] ?? ''}';
     if (b64.isEmpty) {
-      await _json(request, {'error': 'audio_base64 is required'}, status: HttpStatus.badRequest);
+      await _json(request, {'error': 'audio_base64 is required'},
+          status: HttpStatus.badRequest);
       return;
     }
     final agent = Get.find<AgentService>();
     final ext = '${body['file_name'] ?? 'audio.wav'}'.split('.').last;
-    final tmp = await agent.newWorkspaceFile('api_upload_${DateTime.now().millisecondsSinceEpoch}.$ext');
+    final tmp = await agent.newWorkspaceFile(
+        'api_upload_${DateTime.now().millisecondsSinceEpoch}.$ext');
     try {
       await tmp.writeAsBytes(base64Decode(b64));
       final text = await Get.find<VoiceService>()
           .transcribeFile(tmp.path, language: '${body['language'] ?? ''}');
       await _json(request, {'text': text});
     } catch (e) {
-      await _json(request, {'error': '$e'}, status: HttpStatus.internalServerError);
+      await _json(request, {'error': '$e'},
+          status: HttpStatus.internalServerError);
     } finally {
       if (await tmp.exists()) await tmp.delete();
     }
@@ -300,7 +322,8 @@ class OpenAiServerService {
     final body = await _readJson(request);
     final text = '${body['input'] ?? ''}'.trim();
     if (text.isEmpty) {
-      await _json(request, {'error': 'input is required'}, status: HttpStatus.badRequest);
+      await _json(request, {'error': 'input is required'},
+          status: HttpStatus.badRequest);
       return;
     }
     try {
@@ -310,7 +333,8 @@ class OpenAiServerService {
       request.response.add(wav);
       await request.response.close();
     } catch (e) {
-      await _json(request, {'error': '$e'}, status: HttpStatus.internalServerError);
+      await _json(request, {'error': '$e'},
+          status: HttpStatus.internalServerError);
     }
   }
 
@@ -319,15 +343,18 @@ class OpenAiServerService {
     final body = await _readJson(request);
     final prompt = '${body['prompt'] ?? ''}'.trim();
     if (prompt.isEmpty) {
-      await _json(request, {'error': 'prompt is required'}, status: HttpStatus.badRequest);
+      await _json(request, {'error': 'prompt is required'},
+          status: HttpStatus.badRequest);
       return;
     }
     final agent = Get.find<AgentService>();
     final name = 'api_image_${DateTime.now().millisecondsSinceEpoch}.png';
-    final r = await agent.callTool('generate_image', {'prompt': prompt, 'name': name});
+    final r = await agent
+        .callTool('generate_image', {'prompt': prompt, 'name': name});
     final f = await agent.workspaceFile(name);
     if (f == null) {
-      await _json(request, {'error': r}, status: HttpStatus.internalServerError);
+      await _json(request, {'error': r},
+          status: HttpStatus.internalServerError);
       return;
     }
     await _json(request, {
@@ -348,7 +375,7 @@ class OpenAiServerService {
           {
             'id': _responseModel(inference),
             if (_agentModel != null) 'name': _agentModel,
-            if (_agentModel != null) 'tool_calling': false,
+            if (_agentModel != null) 'tool_calling': _allowTools,
             'object': 'model',
             'created': DateTime.now().millisecondsSinceEpoch ~/ 1000,
             'owned_by': 'local',
@@ -398,10 +425,13 @@ class OpenAiServerService {
           model != null &&
           model.isNotEmpty &&
           model != inference.loadedModelName.value) {
-        _onLog?.call('Request for "$model"; serving ${inference.loadedModelName.value}');
+        _onLog?.call(
+            'Request for "$model"; serving ${inference.loadedModelName.value}');
       }
 
-      final parsed = await _parseChatRequest(body, tempFiles);
+      final tools = OpenCodeTools(_allowTools ? body['tools'] : null,
+          workspace: _workspace);
+      final parsed = await _parseChatRequest(body, tempFiles, tools: tools);
       if (parsed.error != null) {
         await _json(request, {'error': parsed.error},
             status: HttpStatus.badRequest);
@@ -424,7 +454,8 @@ class OpenAiServerService {
       final maxTokens = _maxTokens(body);
       final stop = _stop(body);
       if (body['stream'] == true) {
-        await _streamChatResponse(request, inference, parsed, maxTokens, stop);
+        await _streamChatResponse(
+            request, inference, parsed, maxTokens, stop, tools);
       } else {
         final stopsBefore = inference.stopCount;
         final text = await inference.generate(
@@ -446,7 +477,10 @@ class OpenAiServerService {
           await _bridgeError(request, text, HttpStatus.badGateway);
           return;
         }
-        await _json(request, _chatResponse(_responseModel(inference), text));
+        await _json(
+            request,
+            _chatResponse(_responseModel(inference), text,
+                toolCall: tools.parse(text, _id())));
       }
     } finally {
       await _agentStream?.close();
@@ -465,7 +499,8 @@ class OpenAiServerService {
       if (_agentModel != null) {
         await _bridgeError(request, modelError, HttpStatus.conflict);
       } else {
-        await _json(request, {'error': modelError}, status: HttpStatus.badRequest);
+        await _json(request, {'error': modelError},
+            status: HttpStatus.badRequest);
       }
       return false;
     }
@@ -483,7 +518,10 @@ class OpenAiServerService {
 
   Future<void> _interrupted(HttpRequest request) => _json(
         request,
-        {'error': 'Generation was interrupted (the app started its own response)'},
+        {
+          'error':
+              'Generation was interrupted (the app started its own response)'
+        },
         status: HttpStatus.serviceUnavailable,
       );
 
@@ -492,7 +530,11 @@ class OpenAiServerService {
     final raw = body['stop'];
     if (raw is String) return raw.isEmpty ? const [] : [raw];
     if (raw is List) {
-      return raw.whereType<String>().where((s) => s.isNotEmpty).take(4).toList();
+      return raw
+          .whereType<String>()
+          .where((s) => s.isNotEmpty)
+          .take(4)
+          .toList();
     }
     return const [];
   }
@@ -573,7 +615,9 @@ class OpenAiServerService {
       return 'Select the linked NeuroMesh model.';
     }
     final tools = body['tools'];
-    if ((tools != null && (tools is! List || tools.isNotEmpty)) ||
+    if ((!_allowTools &&
+            tools != null &&
+            (tools is! List || tools.isNotEmpty)) ||
         body['tool_choice'] is Map ||
         body['tool_choice'] == 'required' ||
         body['functions'] != null ||
@@ -584,7 +628,8 @@ class OpenAiServerService {
     if (messages is List) {
       for (final message in messages.whereType<Map>()) {
         final content = message['content'];
-        if (message['tool_calls'] != null || message['role'] == 'tool') {
+        if (!_allowTools &&
+            (message['tool_calls'] != null || message['role'] == 'tool')) {
           return 'Tool calling is unavailable on this bridge.';
         }
         if (content is List &&
@@ -597,7 +642,12 @@ class OpenAiServerService {
   }
 
   Future<void> _bridgeError(HttpRequest request, String message, int status) =>
-      _json(request, {'error': {'message': message}}, status: status);
+      _json(
+          request,
+          {
+            'error': {'message': message}
+          },
+          status: status);
 
   String _responseModel(InferenceService inference) =>
       _agentModel == null ? inference.loadedModelName.value : agentModelId;
@@ -605,7 +655,8 @@ class OpenAiServerService {
   /// Temp files are appended to [tempFiles] as they're written so the caller
   /// can always delete them, including when parsing fails part-way.
   Future<_ParsedChatRequest> _parseChatRequest(
-      Map<String, dynamic> body, List<File> tempFiles) async {
+      Map<String, dynamic> body, List<File> tempFiles,
+      {required OpenCodeTools tools}) async {
     final rawMessages = body['messages'];
     if (rawMessages is! List || rawMessages.isEmpty) {
       return _ParsedChatRequest.error('messages must be a non-empty array');
@@ -622,11 +673,16 @@ class OpenAiServerService {
       if (raw is! Map) {
         return _ParsedChatRequest.error('message[$i] must be an object');
       }
-      final role = '${raw['role'] ?? ''}';
+      final rawRole = '${raw['role'] ?? ''}';
+      final role = _allowTools && rawRole == 'tool' ? 'user' : rawRole;
       if (role != 'system' && role != 'user' && role != 'assistant') {
         return _ParsedChatRequest.error('message[$i].role is unsupported');
       }
-      final contentResult = await _parseContent(raw['content'], tempFiles);
+      final content =
+          _allowTools && (rawRole == 'tool' || raw['tool_calls'] != null)
+              ? OpenCodeTools.textForMessage(raw)
+              : raw['content'];
+      final contentResult = await _parseContent(content, tempFiles);
       if (contentResult.error != null) {
         return _ParsedChatRequest.error(contentResult.error!);
       }
@@ -651,6 +707,7 @@ class OpenAiServerService {
           'last user message must contain text, image, or audio');
     }
 
+    if (!tools.isEmpty) systemParts.add(tools.instructions);
     return _ParsedChatRequest(
       prompt: lastUserText.isEmpty ? 'Describe this attachment.' : lastUserText,
       systemPrompt: systemParts.isEmpty ? null : systemParts.join('\n'),
@@ -759,6 +816,7 @@ class OpenAiServerService {
     _ParsedChatRequest parsed,
     int? maxTokens,
     List<String> stop,
+    OpenCodeTools tools,
   ) async {
     final response = request.response;
     _addCorsHeaders(response);
@@ -771,7 +829,7 @@ class OpenAiServerService {
       }
     });
 
-    void chunk(Map<String, String> delta, {String? finishReason}) {
+    void chunk(Map<String, dynamic> delta, {String? finishReason}) {
       sse.event({
         'id': id,
         'object': 'chat.completion.chunk',
@@ -790,6 +848,26 @@ class OpenAiServerService {
     void emit(String token) {
       emitted = true;
       chunk({'content': token});
+      onAgentText?.call(token);
+    }
+
+    const toolPrefix = '<tool_call>';
+    var undecided = '';
+    bool? plainText;
+    void emitUnlessTool(String token) {
+      if (plainText == true) {
+        emit(token);
+        return;
+      }
+      if (plainText == false) return;
+      undecided += token;
+      final start = undecided.trimLeft();
+      if (start.startsWith(toolPrefix)) {
+        plainText = false;
+      } else if (!toolPrefix.startsWith(start)) {
+        plainText = true;
+        emit(undecided);
+      }
     }
 
     if (_agentModel != null) {
@@ -815,16 +893,44 @@ class OpenAiServerService {
       audioPath: parsed.audioPath,
       maxTokens: maxTokens,
       stopSequences: stop,
-      onToken: emit,
+      onToken: tools.isEmpty ? emit : emitUnlessTool,
     );
     if (_agentModel != null && result.startsWith('ERROR:')) {
-      sse.event({'error': {'message': result}});
+      sse.event({
+        'error': {'message': result}
+      });
+      await sse.close();
+      return;
+    }
+    final toolCall = tools.parse(result, _id());
+    if (toolCall != null && inference.stopCount == stopsBefore) {
+      chunk({
+        'tool_calls': [
+          {'index': 0, ...toolCall}
+        ]
+      });
+      chunk({}, finishReason: 'tool_calls');
+      sse.raw('data: [DONE]\n\n');
+      await sse.close();
+      return;
+    }
+    if (!tools.isEmpty && result.trimLeft().startsWith(toolPrefix)) {
+      sse.event({
+        'error': {
+          'message': 'The model returned an invalid workspace tool call.'
+        },
+      });
       await sse.close();
       return;
     }
     await _finishStream(
-      sse, inference, stopsBefore, emitted ? null : result, emit,
-      beforeDone: _agentModel == null ? null : () => chunk({}, finishReason: 'stop'),
+      sse,
+      inference,
+      stopsBefore,
+      emitted ? null : result,
+      emit,
+      beforeDone:
+          _agentModel == null ? null : () => chunk({}, finishReason: 'stop'),
     );
   }
 
@@ -896,11 +1002,12 @@ class OpenAiServerService {
       stopSequences: stop,
       onToken: emit,
     );
-    await _finishStream(sse, inference, stopsBefore,
-        emitted ? null : result, emit);
+    await _finishStream(
+        sse, inference, stopsBefore, emitted ? null : result, emit);
   }
 
-  Map<String, dynamic> _chatResponse(String model, String text) {
+  Map<String, dynamic> _chatResponse(String model, String text,
+      {Map<String, dynamic>? toolCall}) {
     return {
       'id': 'chatcmpl-${_id()}',
       'object': 'chat.completion',
@@ -909,8 +1016,12 @@ class OpenAiServerService {
       'choices': [
         {
           'index': 0,
-          'message': {'role': 'assistant', 'content': text},
-          'finish_reason': 'stop',
+          'message': {
+            'role': 'assistant',
+            'content': toolCall == null ? text : null,
+            if (toolCall != null) 'tool_calls': [toolCall],
+          },
+          'finish_reason': toolCall == null ? 'stop' : 'tool_calls',
         }
       ],
     };

@@ -8,6 +8,7 @@ import 'package:get/get.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
+import '../core/build_flavor.dart';
 import 'agent_service.dart';
 import 'device_bridge.dart';
 import 'hive_service.dart';
@@ -27,13 +28,14 @@ class SandboxService extends GetxService {
   final downloadProgress = Rx<double?>(null);
   Future<void>? _initializing;
   Future<void>? _installation;
+  http.Client? _installationClient;
   int _commands = 0;
   final busy = false.obs;
   final status = ''.obs;
 
   String _libDir = '';
 
-  static bool get supported => !kIsWeb && Platform.isAndroid;
+  static bool get supported => !kIsWeb && Platform.isAndroid && !kPlayBuild;
 
   Future<Directory> _root() async {
     final base = await getApplicationSupportDirectory();
@@ -79,6 +81,8 @@ class SandboxService extends GetxService {
     return task.whenComplete(() => _installation = null);
   }
 
+  void cancelInstallation() => _installationClient?.close();
+
   Future<void> _install() async {
     if (!supported)
       throw Exception('The Linux sandbox requires the full Android build.');
@@ -91,7 +95,7 @@ class SandboxService extends GetxService {
       throw StateError('Wait for the current sandbox operation.');
     busy.value = true;
     downloadProgress.value = null;
-    final client = http.Client();
+    final client = _installationClient = http.Client();
     Directory? staging;
     File? archive;
     try {
@@ -181,6 +185,7 @@ class SandboxService extends GetxService {
       rethrow;
     } finally {
       client.close();
+      _installationClient = null;
       if (archive != null && await archive.exists()) await archive.delete();
       if (staging != null && await staging.exists())
         await staging.delete(recursive: true);
@@ -229,11 +234,68 @@ class SandboxService extends GetxService {
 
   Future<String> _run(String command,
       {required int timeoutSec, required String workingDirectory}) async {
+    final p = await _start(['/bin/sh', '-c', command],
+        workingDirectory: workingDirectory);
+    final out = StringBuffer();
+    void add(List<int> b) {
+      if (out.length < 60000) out.write(utf8.decode(b, allowMalformed: true));
+    }
+
+    p.stdin.close();
+    final streams = [p.stdout.forEach(add), p.stderr.forEach(add)];
+    var timedOut = false;
+    final code =
+        await p.exitCode.timeout(Duration(seconds: timeoutSec), onTimeout: () {
+      timedOut = true;
+      p.kill(ProcessSignal.sigkill);
+      return -1;
+    });
+    await Future.wait(streams)
+        .timeout(const Duration(seconds: 2), onTimeout: () => []);
+    var text = out.toString().trim();
+    if (text.length > 6000) {
+      text =
+          '${text.substring(0, 2500)}\n… (output cut) …\n${text.substring(text.length - 3200)}';
+    }
+    return '${timedOut ? '[timed out after $timeoutSec s]\n' : ''}${text.isEmpty ? '(no output)' : text}\n[exit code $code]';
+  }
+
+  Future<Directory> openCodeDirectory() async {
+    if (!supported)
+      throw UnsupportedError('OpenCode requires the standalone Android APK.');
+    return Directory('${(await _root()).path}/rootfs/opt/neuromesh-opencode');
+  }
+
+  Future<Process> startOpenCodeProcess(List<String> command,
+      {Map<String, String> environment = const {}}) async {
+    if (busy.value || _commands > 0) {
+      throw StateError('Wait for the current Linux operation.');
+    }
+    _commands++;
+    final finished = Completer<void>();
+    _lock = finished.future;
+    try {
+      final process = await _start(command,
+          workingDirectory: '/workspace', environment: environment);
+      unawaited(process.exitCode.whenComplete(() {
+        _commands--;
+        finished.complete();
+      }));
+      return process;
+    } catch (_) {
+      _commands--;
+      finished.complete();
+      rethrow;
+    }
+  }
+
+  Future<Process> _start(List<String> command,
+      {required String workingDirectory,
+      Map<String, String> environment = const {}}) async {
     await _initializing;
-    if (!installed.value)
-      return 'Error: the Linux sandbox is not installed. Install Alpine Linux from the terminal.';
-    if (!hasProot)
-      return 'The Alpine launcher is incomplete. Install a newer ARM64 build of NeuroMesh AI.';
+    if (!supported || !installed.value || !hasProot) {
+      throw StateError('Install the Alpine runtime before using its commands.');
+    }
     final root = await _root();
     final work = (await Get.find<AgentService>().filesDir()).path;
     final libs = '${root.path}/lib';
@@ -258,9 +320,7 @@ class SandboxService extends GetxService {
       '/sys',
       '-b',
       '$work:/workspace',
-      '/bin/sh',
-      '-c',
-      command,
+      ...command,
     ];
     final env = {
       'PROOT_LOADER': '$_libDir/libproot_loader.so',
@@ -276,35 +336,8 @@ class SandboxService extends GetxService {
       'PIP_DISABLE_PIP_VERSION_CHECK': '1',
       'NPM_CONFIG_PREFIX': '/root/.npm-global',
     };
-    Process p;
-    try {
-      p = await Process.start('$_libDir/libproot.so', args,
-          environment: env, includeParentEnvironment: false);
-    } catch (e) {
-      return 'Error: could not start the sandbox: $e';
-    }
-    final out = StringBuffer();
-    void add(List<int> b) {
-      if (out.length < 60000) out.write(utf8.decode(b, allowMalformed: true));
-    }
-
-    p.stdin.close();
-    final streams = [p.stdout.forEach(add), p.stderr.forEach(add)];
-    var timedOut = false;
-    final code =
-        await p.exitCode.timeout(Duration(seconds: timeoutSec), onTimeout: () {
-      timedOut = true;
-      p.kill(ProcessSignal.sigkill);
-      return -1;
-    });
-    await Future.wait(streams)
-        .timeout(const Duration(seconds: 2), onTimeout: () => []);
-    var text = out.toString().trim();
-    if (text.length > 6000) {
-      text =
-          '${text.substring(0, 2500)}\n… (output cut) …\n${text.substring(text.length - 3200)}';
-    }
-    return '${timedOut ? '[timed out after $timeoutSec s]\n' : ''}${text.isEmpty ? '(no output)' : text}\n[exit code $code]';
+    return Process.start('$_libDir/libproot.so', args,
+        environment: {...env, ...environment}, includeParentEnvironment: false);
   }
 }
 

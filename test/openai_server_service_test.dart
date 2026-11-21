@@ -4,8 +4,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:get/get.dart';
+import 'package:neuromesh_ai/services/android_opencode.dart';
 import 'package:neuromesh_ai/services/inference_service.dart';
 import 'package:neuromesh_ai/services/openai_server_service_io.dart';
+import 'package:neuromesh_ai/services/opencode_tools.dart';
 
 void main() {
   late OpenAiServerService server;
@@ -28,8 +30,8 @@ void main() {
     Map<String, String> headers = const {},
     String? body,
   }) async {
-    final req = await client.openUrl(
-        method, Uri.parse('http://127.0.0.1:$port$path'));
+    final req =
+        await client.openUrl(method, Uri.parse('http://127.0.0.1:$port$path'));
     req.persistentConnection = false;
     headers.forEach(req.headers.set);
     if (body != null) req.write(body);
@@ -115,8 +117,7 @@ void main() {
       expect(fake.lastMaxTokens, 7);
     });
 
-    test('passes OpenAI stop (string or list) through to the model',
-        () async {
+    test('passes OpenAI stop (string or list) through to the model', () async {
       var res = await send('POST', '/v1/chat/completions',
           headers: json,
           body: jsonEncode({
@@ -147,8 +148,8 @@ void main() {
 
     test('reports 503 when the generation is interrupted', () async {
       fake.tokensToEmit = 50;
-      final pending = send('POST', '/v1/chat/completions',
-          headers: json, body: chatBody());
+      final pending =
+          send('POST', '/v1/chat/completions', headers: json, body: chatBody());
       await Future.delayed(const Duration(milliseconds: 100));
       await fake.stopGeneration(); // e.g. the user started a chat reply
       expect((await pending).statusCode, HttpStatus.serviceUnavailable);
@@ -191,7 +192,9 @@ void main() {
     const completion = '/v1/chat/completions';
     const body = {
       'model': OpenAiServerService.agentModelId,
-      'messages': [{'role': 'user', 'content': 'hello'}],
+      'messages': [
+        {'role': 'user', 'content': 'hello'}
+      ],
     };
 
     setUp(() async {
@@ -202,40 +205,58 @@ void main() {
 
     tearDown(Get.reset);
 
-    test('requires a key, stays on loopback and exposes only model calls', () async {
+    test('requires a key, stays on loopback and exposes only model calls',
+        () async {
       final restricted = OpenAiServerService.forAgentModel('fake-model');
       await expectLater(restricted.start(port: 0), throwsArgumentError);
-      await expectLater(restricted.start(port: 0, allowNetwork: true, apiKey: 'another'),
+      await expectLater(
+          restricted.start(port: 0, allowNetwork: true, apiKey: 'another'),
           throwsArgumentError);
       expect(server.localUrl, 'http://127.0.0.1:$port');
       expect((await send('GET', '/v1/models')).statusCode, 401);
       expect((await send('GET', '/v1/files', headers: auth)).statusCode, 404);
-      expect((await send('OPTIONS', completion, headers: auth)).statusCode, 404);
-      final request = await client.getUrl(Uri.parse('${server.localUrl}/v1/models'));
+      expect(
+          (await send('OPTIONS', completion, headers: auth)).statusCode, 404);
+      final request =
+          await client.getUrl(Uri.parse('${server.localUrl}/v1/models'));
       auth.forEach(request.headers.set);
       final response = await request.close();
       expect(response.headers.value('access-control-allow-origin'), isNull);
       final models = jsonDecode(await response.transform(utf8.decoder).join());
       expect(models['data'].single, containsPair('tool_calling', false));
-      expect(models['data'].single, containsPair('id', OpenAiServerService.agentModelId));
+      expect(models['data'].single,
+          containsPair('id', OpenAiServerService.agentModelId));
     });
 
-    test('rejects tools, wrong model IDs and a reloaded model of the same name', () async {
+    test('rejects tools, wrong model IDs and a reloaded model of the same name',
+        () async {
       for (final payload in [
-        {...body, 'tools': [{'type': 'function'}]},
+        {
+          ...body,
+          'tools': [
+            {'type': 'function'}
+          ]
+        },
         {...body, 'model': 'another-model'},
       ]) {
-        expect((await send('POST', completion, headers: json,
-            body: jsonEncode(payload))).statusCode, 400);
+        expect(
+            (await send('POST', completion,
+                    headers: json, body: jsonEncode(payload)))
+                .statusCode,
+            400);
       }
       fake.modelRevision++;
-      expect((await send('POST', completion, headers: json,
-          body: jsonEncode(body))).statusCode, 409);
+      expect(
+          (await send('POST', completion,
+                  headers: json, body: jsonEncode(body)))
+              .statusCode,
+          409);
       expect(fake.isGenerating.value, isFalse);
     });
 
     test('streams an OpenAI finish chunk before DONE', () async {
-      final request = await client.postUrl(Uri.parse('${server.localUrl}$completion'));
+      final request =
+          await client.postUrl(Uri.parse('${server.localUrl}$completion'));
       json.forEach(request.headers.set);
       request.write(jsonEncode({...body, 'stream': true}));
       final response = await request.close();
@@ -246,7 +267,8 @@ void main() {
       expect(data, endsWith('"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'));
     });
 
-    test('disconnect stops an active bridge generation and revokes access', () async {
+    test('disconnect stops an active bridge generation and revokes access',
+        () async {
       fake.tokensToEmit = 500;
       final uri = Uri.parse('${server.localUrl}$completion');
       final request = await client.postUrl(uri);
@@ -261,6 +283,144 @@ void main() {
       await expectLater(client.postUrl(uri), throwsA(isA<SocketException>()));
     });
   });
+
+  test('only emits workspace tools offered by the agent with valid keys', () {
+    final tools = OpenCodeTools([
+      {
+        'type': 'function',
+        'function': {
+          'name': 'read',
+          'parameters': {
+            'properties': {
+              'filePath': {'type': 'string'}
+            },
+            'required': ['filePath'],
+          },
+        },
+      },
+    ]);
+    expect(
+        tools.parse(
+            '<tool_call>{"name":"read","arguments":{"filePath":"README"}}</tool_call>',
+            '1'),
+        containsPair('id', 'call_1'));
+    for (final body in [
+      '{"name":"write","arguments":{"filePath":"README"}}',
+      '{"name":"read","arguments":{}}',
+      '{"name":"read","arguments":{"filePath":"README","command":"ls"}}',
+    ]) {
+      expect(tools.parse('<tool_call>$body</tool_call>', '1'), isNull);
+    }
+  });
+
+  final openCodePath = Platform.environment['NEUROMESH_TEST_OPENCODE_CLI'];
+  test('real OpenCode runs a local workspace tool and resumes the session',
+      () async {
+    final directory =
+        await Directory.systemTemp.createTemp('neuromesh-opencode');
+    addTearDown(() => directory.delete(recursive: true));
+    final fixture = await File('${directory.path}/fixture.txt')
+        .writeAsString('NEUROMESH_LOCAL_TOOL_TEST');
+    await Process.run('git', ['init', directory.path]);
+    final fake = Get.put<InferenceService>(FakeInference()) as FakeInference;
+    addTearDown(Get.reset);
+    var read = false;
+    fake.reply = (prompt, history) {
+      if (prompt.contains('NEUROMESH_LOCAL_TOOL_TEST') ||
+          history.toString().contains('NEUROMESH_LOCAL_TOOL_TEST')) {
+        read = true;
+      }
+      return read
+          ? 'Local file verified.'
+          : '<tool_call>${jsonEncode({
+                  'name': 'read',
+                  'arguments': {'filePath': fixture.path},
+                })}</tool_call>';
+    };
+    server = OpenAiServerService.forAgentModel('fake-model', allowTools: true);
+    final liveText = StringBuffer();
+    server.onAgentText = liveText.write;
+    await server.start(port: 0, apiKey: 'local-test');
+    Future<ProcessResult> run(List<String> args,
+        {String? executable, String? prompt}) async {
+      final process = await Process.start(
+        executable ?? openCodePath!,
+        args,
+        workingDirectory: directory.path,
+        includeParentEnvironment: false,
+        environment: {
+          'PATH': '/usr/bin:/bin',
+          'HOME': '${directory.path}/home',
+          'OPENCODE_DISABLE_PROJECT_CONFIG': 'true',
+          'OPENCODE_DISABLE_DEFAULT_PLUGINS': 'true',
+          'OPENCODE_DISABLE_EXTERNAL_SKILLS': 'true',
+          'OPENCODE_DISABLE_LSP_DOWNLOAD': 'true',
+          'OPENCODE_DISABLE_MODELS_FETCH': 'true',
+          'OPENCODE_DISABLE_AUTOUPDATE': 'true',
+          'NEUROMESH_BRIDGE_KEY': 'local-test',
+          'OPENCODE_CONFIG_CONTENT': AndroidOpenCode.localProviderConfig(
+            name: 'fake-model',
+            context: 8192,
+            endpoint: '${server.localUrl}/v1',
+          ),
+        },
+      );
+      final stdout = process.stdout.transform(utf8.decoder).join();
+      final stderr = process.stderr.transform(utf8.decoder).join();
+      if (prompt != null) process.stdin.write(prompt);
+      await process.stdin.close();
+      return ProcessResult(
+          process.pid, await process.exitCode, await stdout, await stderr);
+    }
+
+    final listed = await run(['models', 'neuromesh', '--pure']);
+    expect(listed.exitCode, 0, reason: '${listed.stderr}');
+    expect(listed.stdout.trim(), 'neuromesh/loaded');
+    const args = [
+      'run',
+      '--pure',
+      '--format',
+      'json',
+      '--model',
+      'neuromesh/loaded'
+    ];
+    final result = await run(args, prompt: 'Read the test fixture.');
+    expect(result.exitCode, 0, reason: '${result.stdout}\n${result.stderr}');
+    expect(read, isTrue, reason: '${result.stdout}');
+    final events = (result.stdout as String)
+        .split('\n')
+        .map(AndroidOpenCode.parseEvent)
+        .whereType<Map>()
+        .toList();
+    expect(events.any((event) => event['type'] == 'tool_use'), isTrue);
+    final session = events.first['sessionID'] as String;
+    final resumed =
+        await run([...args, '--session', session], prompt: 'Continue.');
+    expect(resumed.exitCode, 0, reason: '${resumed.stdout}\n${resumed.stderr}');
+    final sessionFile = File('${directory.path}/session.json');
+    final exported = await run([
+      '-c',
+      AndroidOpenCode.exportToFile,
+      'neuromesh-export',
+      openCodePath!,
+      session,
+      sessionFile.path,
+    ], executable: '/bin/sh');
+    expect(exported.exitCode, 0, reason: '${exported.stderr}');
+    expect(
+        AndroidOpenCode.parseHistory(await sessionFile.readAsString()),
+        containsAllInOrder([
+          (role: 'user', text: 'Read the test fixture.'),
+          (role: 'assistant', text: 'Local file verified.'),
+          (role: 'user', text: 'Continue.'),
+        ]));
+    expect(liveText.toString(), contains('Local file verified.'));
+    expect(liveText.toString(), isNot(contains('<tool_call>')));
+  },
+      skip: openCodePath == null
+          ? 'Set NEUROMESH_TEST_OPENCODE_CLI to OpenCode v1.19.6'
+          : false,
+      timeout: const Timeout(Duration(minutes: 2)));
 }
 
 /// Minimal stand-in for InferenceService: tokens are emitted on a timer until
@@ -286,6 +446,7 @@ class FakeInference extends GetxService implements InferenceService {
   int stops = 0;
   Duration tokenInterval = const Duration(milliseconds: 20);
   int tokensToEmit = 3;
+  String Function(String, List<Map<String, String>>?)? reply;
   Completer<void>? _stopped;
 
   @override
@@ -309,11 +470,17 @@ class FakeInference extends GetxService implements InferenceService {
     generationSource.value = source;
     final stopped = _stopped = Completer<void>();
     final out = StringBuffer();
-    for (var i = 0; i < tokensToEmit && !stopped.isCompleted; i++) {
+    final scripted = reply?.call(prompt, conversationHistory);
+    final tokens = scripted
+            ?.splitMapJoin(RegExp(r'.{1,5}'),
+                onMatch: (match) => '${match[0]}\u0000')
+            .split('\u0000') ??
+        List.generate(tokensToEmit, (index) => 't$index ');
+    for (final token in tokens) {
       await Future.any([Future.delayed(tokenInterval), stopped.future]);
       if (stopped.isCompleted) break;
-      out.write('t$i ');
-      onToken?.call('t$i ');
+      out.write(token);
+      onToken?.call(token);
     }
     isGenerating.value = false;
     generationSource.value = '';

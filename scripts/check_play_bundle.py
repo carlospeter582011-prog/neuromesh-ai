@@ -13,6 +13,9 @@ EXCLUDED_FILES = {
     FLUTTER_ASSETS + "packages/piper_phonemize/assets/web/piper-phonemize-wasm-main.data",
     FLUTTER_ASSETS + "packages/sherpa_onnx_web/assets/sherpa-onnx-wasm-web.wasm",
 }
+STANDALONE_LIBRARIES = {
+    'libproot.so', 'libproot_loader.so', 'libtalloc.so', 'libandroid-shmem.so',
+}
 REQUIRED_FILES = {
     f"base/lib/{abi}/{library}"
     for abi in ABIS
@@ -43,6 +46,9 @@ def main():
             errors.append(f"Unexpected contents in {DEBUG_METADATA}")
         for name in sorted(EXCLUDED_FILES & files):
             errors.append(f"Unexpected web asset: {name}")
+        for name in sorted(files):
+            if name.startswith('base/lib/') and Path(name).name in STANDALONE_LIBRARIES:
+                errors.append(f"Standalone Linux runtime in the Play bundle: {name}")
         for name in sorted(REQUIRED_FILES - files):
             errors.append(f"Missing required bundle entry: {name}")
 
